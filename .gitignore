@@ -1,0 +1,7 @@
+# Cada cliente tiene contraseñas y claves: nunca se suben
+clients/*
+!clients/.gitkeep
+*.env
+!template/.env.example
+qr.png
+backups/

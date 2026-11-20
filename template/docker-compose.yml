@@ -1,0 +1,118 @@
+# =====================================================================
+# Entorno de UN cliente: base de datos + WhatsApp (Evolution API) + túnel.
+# Se copia a clients/<slug>/ con scripts/nuevo-cliente.ps1 y se levanta con:
+#   docker compose --env-file .env up -d
+# n8n NO está acá: es tu contenedor existente, conectado a la red "wa-net".
+# =====================================================================
+name: wa-${CLIENT_SLUG}
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: wa-${CLIENT_SLUG}-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      default:
+      wa-net:
+        aliases:
+          - wa-${CLIENT_SLUG}-db
+
+  # WhatsApp vía Baileys (multi-dispositivo, como WhatsApp Web):
+  # el número sigue funcionando normal en el celular.
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.7
+    container_name: wa-${CLIENT_SLUG}-evolution
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${EVOLUTION_PORT}:8080"
+    environment:
+      SERVER_TYPE: http
+      SERVER_PORT: 8080
+      SERVER_URL: ${EVOLUTION_PUBLIC_URL}
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
+      LANGUAGE: es
+      DEL_INSTANCE: "false"
+      CONFIG_SESSION_PHONE_CLIENT: ${EVOLUTION_DEVICE_NAME}
+      CONFIG_SESSION_PHONE_NAME: Chrome
+      QRCODE_LIMIT: 30
+      # Base de datos (schema propio dentro de la DB del cliente)
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?schema=evolution
+      DATABASE_CONNECTION_CLIENT_NAME: wa_${CLIENT_SLUG}
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "false"
+      DATABASE_SAVE_MESSAGE_UPDATE: "false"
+      DATABASE_SAVE_DATA_CONTACTS: "true"
+      DATABASE_SAVE_DATA_CHATS: "false"
+      DATABASE_SAVE_DATA_LABELS: "false"
+      DATABASE_SAVE_DATA_HISTORIC: "false"
+      # Sin Redis: caché local (menos contenedores, costo cero)
+      CACHE_REDIS_ENABLED: "false"
+      CACHE_LOCAL_ENABLED: "true"
+      # Todo mensaje entrante/saliente va al workflow de n8n de este cliente
+      WEBHOOK_GLOBAL_ENABLED: "true"
+      WEBHOOK_GLOBAL_URL: ${N8N_WEBHOOK_URL}
+      WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: "false"
+      WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
+      WEBHOOK_EVENTS_CONNECTION_UPDATE: "false"
+      WEBHOOK_EVENTS_QRCODE_UPDATED: "false"
+      LOG_LEVEL: ERROR,WARN,INFO
+      LOG_BAILEYS: error
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      default:
+      wa-net:
+        aliases:
+          - wa-${CLIENT_SLUG}-evolution
+
+  # Túnel con dominio propio (gratis en Cloudflare): requiere TUNNEL_TOKEN.
+  # Se activa con COMPOSE_PROFILES=tunnel en .env
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.7
+    container_name: wa-${CLIENT_SLUG}-tunnel
+    restart: unless-stopped
+    profiles:
+      - tunnel
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - evolution
+
+  # Túnel rápido sin cuenta ni dominio (URL *.trycloudflare.com que cambia
+  # en cada reinicio). Se activa con COMPOSE_PROFILES=quicktunnel en .env
+  quicktunnel:
+    image: cloudflare/cloudflared:2026.10.7
+    container_name: wa-${CLIENT_SLUG}-quicktunnel
+    restart: unless-stopped
+    profiles:
+      - quicktunnel
+    command: tunnel --no-autoupdate --url http://evolution:8080
+    depends_on:
+      - evolution
+
+volumes:
+  db_data:
+  evolution_instances:
+
+networks:
+  wa-net:
+    external: true

@@ -1,0 +1,389 @@
+{
+  "id": "__WORKFLOW_ID__",
+  "name": "WA __CLIENT_NAME__ - Chatbot IA",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wa-__CLIENT_SLUG__",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "name": "WhatsApp entrante",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "id": "dfd67aaf-5e6f-4423-9f14-e0b37feb9f92",
+      "webhookId": "__WEBHOOK_ID__"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convierte el webhook de Evolution API en un item simple.\n// Ignora grupos, estados, canales y eventos que no son mensajes.\nconst out = [];\nfor (const item of $input.all()) {\n  const b = item.json.body || item.json;\n  if (b.event !== 'messages.upsert') continue;\n  const d = Array.isArray(b.data) ? b.data[0] : b.data;\n  if (!d || !d.key) continue;\n  let jid = d.key.remoteJid || '';\n  if (!jid || jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) continue;\n  // WhatsApp nuevo puede mandar ids \"@lid\": si viene el número real, usamos ese.\n  if (jid.endsWith('@lid') && d.key.remoteJidAlt) jid = d.key.remoteJidAlt;\n  const m = d.message || {};\n  const type = d.messageType || Object.keys(m)[0] || 'desconocido';\n  let text = (m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption\n              || m.videoMessage?.caption || m.documentMessage?.caption || '').trim();\n  if (!text && !d.key.fromMe) text = `[${type}]`;\n  out.push({ json: { jid, fromMe: !!d.key.fromMe, waId: d.key.id || '', name: d.pushName || '', text, type } });\n}\nreturn out;"
+      },
+      "name": "Normalizar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "id": "cc883431-b071-4b93-b107-41363f89bbc5"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "143376c0-ce54-4b03-9d7a-da28017bc72c",
+              "leftValue": "={{ $json.fromMe }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "name": "¿Lo escribió el dueño?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ],
+      "id": "6222a532-a857-4b9a-a625-7d985583b8f5"
+    },
+    {
+      "parameters": {
+        "amount": 4,
+        "unit": "seconds"
+      },
+      "name": "Esperar 4s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        120
+      ],
+      "id": "a40a46aa-fd35-45ee-af14-4907ce0f00f2",
+      "webhookId": "349e97eb-4c43-439d-9162-6b3ec20134ef"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT bot_owner_message($1, $2, $3) AS r;",
+        "options": {
+          "queryReplacement": "={{ [$json.jid, $json.text, $json.waId] }}"
+        }
+      },
+      "name": "Pausar bot (dueño respondió)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        880,
+        120
+      ],
+      "id": "e0024dcf-4bc1-4237-a9c7-eeee3c8c731c",
+      "credentials": {
+        "postgres": {
+          "id": "__PG_CRED_ID__",
+          "name": "WA __CLIENT_NAME__ - DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT bot_ingest($1, $2, $3, $4) AS ctx;",
+        "options": {
+          "queryReplacement": "={{ [$json.jid, $json.name, $json.text, $json.waId] }}"
+        }
+      },
+      "name": "Guardar mensaje y contexto",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        420
+      ],
+      "id": "a76a487f-1371-4189-a418-9c9e64694172",
+      "credentials": {
+        "postgres": {
+          "id": "__PG_CRED_ID__",
+          "name": "WA __CLIENT_NAME__ - DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "391208e5-9777-45dd-9203-adce19a9a835",
+              "leftValue": "={{ $json.ctx.should_reply }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "name": "¿Responder?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        420
+      ],
+      "id": "693f7493-ebcc-4eed-b990-54e905e4a679"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Arma la conversación para la IA: instrucciones + info del negocio + historial + mensaje nuevo.\nconst c = $json.ctx;\nlet system = c.system_prompt;\nif (c.knowledge) system += '\\n\\nInformación del negocio (usá solo esto para responder):\\n' + c.knowledge;\nif (c.name) system += `\\n\\nEl cliente se llama ${c.name}.`;\nsystem += '\\nSi el mensaje es un audio, imagen u otro archivo (aparece entre corchetes), explicá amablemente que por ahora solo podés leer texto.';\nconst messages = [{ role: 'system', content: system }, ...(c.history || []), { role: 'user', content: c.text }];\nreturn { json: {\n  jid: c.jid,\n  provider: c.ai_provider,\n  model: c.ai_model,\n  aiBody: { model: c.ai_model, messages, stream: false, think: false, options: { temperature: 0.4 } }\n} };"
+      },
+      "name": "Armar prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        400
+      ],
+      "id": "1964cfa8-ab63-4ef3-991c-bb244652b7b7"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "__OLLAMA_URL__/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.aiBody) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "name": "IA (Ollama local)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        400
+      ],
+      "id": "59be8a9d-5c0a-470a-b9e9-fcaaf5251622"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Respuesta de Ollama (/api/chat). Cuando se agreguen tokens de IA paga,\n// se cambia el nodo anterior y esta línea (ver README, \"Pasar a IA paga\").\nlet reply = ($json.message?.content || '').replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (!reply) reply = 'Gracias por tu mensaje, en breve te respondemos.';\nreturn { json: { jid: $('Armar prompt').item.json.jid, reply } };"
+      },
+      "name": "Extraer respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        400
+      ],
+      "id": "40113e75-eb06-4ed5-a214-5758a8079197"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://wa-__CLIENT_SLUG__-evolution:8080/message/sendText/__INSTANCE__",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.jid, text: $json.reply, delay: 1500 }) }}",
+        "options": {}
+      },
+      "name": "Enviar por WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        400
+      ],
+      "id": "2045d9ad-af52-451a-8c15-77d2e1bcb4ad",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__EVO_CRED_ID__",
+          "name": "WA __CLIENT_NAME__ - Evolution"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT bot_save_reply($1, $2, $3);",
+        "options": {
+          "queryReplacement": "={{ [$('Extraer respuesta').item.json.jid, $('Extraer respuesta').item.json.reply, $json.key?.id ?? ''] }}"
+        }
+      },
+      "name": "Guardar respuesta",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1980,
+        400
+      ],
+      "id": "1a30717c-9ec9-4994-861c-64a6df5c68bb",
+      "credentials": {
+        "postgres": {
+          "id": "__PG_CRED_ID__",
+          "name": "WA __CLIENT_NAME__ - DB"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "WhatsApp entrante": {
+      "main": [
+        [
+          {
+            "node": "Normalizar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar": {
+      "main": [
+        [
+          {
+            "node": "¿Lo escribió el dueño?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Lo escribió el dueño?": {
+      "main": [
+        [
+          {
+            "node": "Esperar 4s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Guardar mensaje y contexto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Esperar 4s": {
+      "main": [
+        [
+          {
+            "node": "Pausar bot (dueño respondió)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar mensaje y contexto": {
+      "main": [
+        [
+          {
+            "node": "¿Responder?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Responder?": {
+      "main": [
+        [
+          {
+            "node": "Armar prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Armar prompt": {
+      "main": [
+        [
+          {
+            "node": "IA (Ollama local)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IA (Ollama local)": {
+      "main": [
+        [
+          {
+            "node": "Extraer respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraer respuesta": {
+      "main": [
+        [
+          {
+            "node": "Enviar por WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar por WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Guardar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none"
+  },
+  "pinData": {},
+  "tags": []
+}
