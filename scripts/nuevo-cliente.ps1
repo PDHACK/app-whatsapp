@@ -7,15 +7,17 @@
   .\scripts\nuevo-cliente.ps1 -Slug panaderia -Nombre "Panadería San José"
   .\scripts\nuevo-cliente.ps1 -Slug ferreteria -Nombre "Ferretería Centro" -TunnelToken "eyJh..." -PublicUrl "https://wa-ferreteria.midominio.com"
   .\scripts\nuevo-cliente.ps1 -Slug test -Nombre "Prueba" -SinTunel
+  .\scripts\nuevo-cliente.ps1 -Slug kiosco -Nombre "Kiosco" -Dominio destru.online   # túnel fijo wa-kiosco.destru.online
 #>
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[a-z0-9][a-z0-9-]{1,29}$')][string]$Slug,
     [Parameter(Mandatory = $true)][string]$Nombre,
     [string]$N8nContainer = $(if ($env:N8N_CONTAINER) { $env:N8N_CONTAINER } else { 'n8n' }),
-    [string]$OllamaUrl = 'http://host.docker.internal:11434',
+    [string]$OllamaUrl = '',   # vacío = se detecta solo (directo o vía ollama-puente)
     [string]$OllamaModel = 'llama3.2:3b',
     [string]$TunnelToken = '',
     [string]$PublicUrl = '',
+    [string]$Dominio = '',     # ej. destru.online: crea el túnel fijo wa-<slug>.<dominio> (ver tunel-cf.ps1)
     [switch]$SinTunel,
     [switch]$SinN8n
 )
@@ -54,6 +56,28 @@ if (-not $SinN8n) {
     if ($nets -notmatch "(^|\s)$Network(\s|$)") {
         docker network connect $Network $N8nContainer
         Write-Host "n8n ('$N8nContainer') conectado a $Network."
+    }
+}
+
+# --- 1b. Cómo llega n8n a Ollama (Windows) ---------------------------------------
+function Test-FromN8n([string]$url) {
+    docker exec $N8nContainer wget -q -T 4 -O /dev/null "$url/api/tags" *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+if (-not $OllamaUrl) {
+    $OllamaUrl = 'http://host.docker.internal:11434'
+    if (-not $SinN8n) {
+        Step 'Buscando Ollama desde n8n'
+        if (Test-FromN8n $OllamaUrl) {
+            Write-Host "n8n llega directo a Ollama ($OllamaUrl)."
+        } else {
+            # Docker sobre WSL (Kiri): host.docker.internal no es Windows -> puente compartido
+            docker compose -f ([IO.Path]::Combine($Root, 'compartido', 'compose.yaml')) up -d ollama-puente | Out-Null
+            Start-Sleep 2
+            $OllamaUrl = 'http://host.docker.internal:11435'
+            if (Test-FromN8n $OllamaUrl) { Write-Host "n8n llega a Ollama por el puente ($OllamaUrl)." }
+            else { Write-Warning "n8n no llega a Ollama. ¿Está abierto Ollama y con OLLAMA_HOST=0.0.0.0? Se deja $OllamaUrl; ver README." }
+        }
     }
 }
 
@@ -209,3 +233,8 @@ Write-Host "     (si venció: .\scripts\cliente.ps1 $Slug qr)"
 if (-not $wfActive) { Write-Host "  - En n8n: abrir 'WA $Nombre - Chatbot IA' y activarlo (Active / Publish)." }
 Write-Host "  - Cargar la info del negocio: .\scripts\cliente.ps1 $Slug sql"
 Write-Host "  - Ollama en Windows con el modelo: ollama pull $OllamaModel"
+
+if ($Dominio) {
+    Step "Túnel fijo en $Dominio"
+    & (Join-Path $PSScriptRoot 'tunel-cf.ps1') -Slug $Slug -Dominio $Dominio
+}

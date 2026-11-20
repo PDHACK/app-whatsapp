@@ -36,6 +36,8 @@ Todo se comunica por una red Docker compartida, `wa-net`, a la que se conecta tu
 | `template/n8n/workflow.json` | Workflow del chatbot (plantilla, se genera uno por cliente) |
 | `template/n8n/credentials.json` | Credenciales de n8n del cliente (plantilla) |
 | `scripts/nuevo-cliente.ps1` | Crea un cliente de punta a punta |
+| `scripts/tunel-cf.ps1` | Pasa un cliente a túnel fijo con subdominio propio (ej. `wa-prueba.destru.online`) |
+| `compartido/compose.yaml` | Servicios compartidos: `ollama-puente` (para Docker sobre WSL, como Kiri) |
 | `scripts/cliente.ps1` | Maneja un cliente: `up`, `down`, `estado`, `qr`, `sql`, `backup`, `logs`, `url`, `lista` |
 | `clients/<slug>/` | Lo genera el script. **No se sube a git** (tiene claves) |
 
@@ -45,6 +47,7 @@ Todo se comunica por una red Docker compartida, `wa-net`, a la que se conecta tu
 - Tu contenedor de n8n corriendo. Por defecto se busca uno llamado `n8n`; si se llama distinto, pasá `-N8nContainer <nombre>` (lo ves con `docker ps`).
 - [Ollama](https://ollama.com) en Windows, con un modelo descargado: `ollama pull llama3.2:3b`.
   Para que n8n (dentro de Docker) lo alcance, Ollama tiene que escuchar en todas las interfaces: variable de entorno de Windows `OLLAMA_HOST=0.0.0.0` y reiniciar Ollama.
+  En **Kiri** (Docker sobre WSL), `host.docker.internal` apunta a la máquina virtual de WSL y no a Windows. El script lo detecta y levanta `ollama-puente` (en `compartido/compose.yaml`), que averigua la IP de Windows en cada arranque. Así n8n usa `http://host.docker.internal:11435` y no se rompe al reiniciar la PC.
 - Opcional: cuenta gratis de Cloudflare con un dominio, si querés una URL fija por cliente.
 
 ## Crear un cliente
@@ -75,7 +78,12 @@ Opciones útiles: `-OllamaModel qwen2.5:3b`, `-OllamaUrl http://otra-pc:11434`, 
 ## Túneles de Cloudflare
 
 - **Sin nada configurado** se usa el perfil `tunel` (igual que en panaderia-reservas): gratis y sin cuenta, pero la URL `*.trycloudflare.com` cambia en cada reinicio. Verla: `.\scripts\cliente.ps1 panaderia url`.
-- **URL fija (recomendado en producción)**: en Cloudflare Zero Trust > Networks > Tunnels creá un túnel por cliente, con un *public hostname* (ej. `wa-panaderia.tudominio.com`) apuntando a `http://evolution:8080`. Copiá el token y:
+- **URL fija con tu dominio (recomendado)**: un comando y listo, sin instalar cloudflared ni copiar tokens a mano:
+  ```powershell
+  .\scripts\tunel-cf.ps1 -Slug panaderia -Dominio destru.online        # -> https://wa-panaderia.destru.online
+  ```
+  La primera vez aparece un link para iniciar sesión en Cloudflare y elegir el dominio; la sesión queda en `%USERPROFILE%\.cloudflared`. El script crea el túnel `wa-<slug>`, el DNS del subdominio, guarda el token en el `.env` del cliente y cambia al perfil `tunel-cf`. También se puede al crear el cliente: `nuevo-cliente.ps1 ... -Dominio destru.online`.
+- **URL fija a mano**: en Cloudflare Zero Trust > Networks > Tunnels creá un túnel por cliente, con un *public hostname* (ej. `wa-panaderia.tudominio.com`) apuntando a `http://evolution:8080`. Copiá el token y:
   ```powershell
   .\scripts\nuevo-cliente.ps1 -Slug panaderia -Nombre "Panadería San José" -TunnelToken "eyJh..." -PublicUrl "https://wa-panaderia.tudominio.com"
   ```
