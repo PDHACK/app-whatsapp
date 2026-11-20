@@ -58,22 +58,26 @@ if (-not $SinN8n) {
 }
 
 # --- 2. Puerto libre y secretos -------------------------------------------------
-$usedPorts = Get-ChildItem (Join-Path $Root 'clients') -Directory -ErrorAction SilentlyContinue |
-    ForEach-Object { Join-Path $_.FullName '.env' } | Where-Object { Test-Path $_ } |
-    ForEach-Object { (Select-String -Path $_ -Pattern '^EVOLUTION_PORT=(\d+)').Matches.Groups[1].Value } |
-    ForEach-Object { [int]$_ }
-$port = 8081
-while ($usedPorts -contains $port) { $port++ }
+$envFiles = Get-ChildItem (Join-Path $Root 'clients') -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object { Join-Path $_.FullName '.env' } | Where-Object { Test-Path $_ }
+function Get-UsedPorts($name) {
+    @($envFiles | ForEach-Object { (Select-String -Path $_ -Pattern "^$name=(\d+)").Matches } |
+        Where-Object { $_ } | ForEach-Object { [int]$_.Groups[1].Value })
+}
+$usedEvo = Get-UsedPorts 'EVOLUTION_PORT'
+$usedDb  = Get-UsedPorts 'DB_PORT'
+$port = 8081; while ($usedEvo -contains $port) { $port++ }
+$dbPort = 5440; while ($usedDb -contains $dbPort) { $dbPort++ }
 
 $pgPassword = New-Secret 28
 $apiKey     = New-Secret 40
-$tunnelProfile    = if ($SinTunel) { '' } elseif ($TunnelToken) { 'tunnel' } else { 'quicktunnel' }
+$tunnelProfile = if ($SinTunel) { '' } elseif ($TunnelToken) { 'tunel-cf' } else { 'tunel' }
 if (-not $PublicUrl) { $PublicUrl = "http://localhost:$port" }
 
 # --- 3. Copiar plantilla y generar .env -----------------------------------------
 Step "Creando clients\$Slug"
 New-Item -ItemType Directory -Force -Path $ClientDir -ErrorAction Stop | Out-Null
-Copy-Item (Join-Path $Template 'docker-compose.yml') $ClientDir -ErrorAction Stop
+Copy-Item (Join-Path $Template 'compose.yaml') $ClientDir -ErrorAction Stop
 Copy-Item (Join-Path $Template 'db') $ClientDir -Recurse -ErrorAction Stop
 Copy-Item (Join-Path $Template 'n8n') $ClientDir -Recurse -ErrorAction Stop
 
@@ -82,10 +86,11 @@ $envContent = @"
 CLIENT_SLUG=$Slug
 CLIENT_NAME=$Nombre
 COMPOSE_PROFILES=$tunnelProfile
-TUNNEL_TOKEN=$TunnelToken
+CLOUDFLARE_TUNNEL_TOKEN=$TunnelToken
 POSTGRES_DB=chatbot
 POSTGRES_USER=chatbot
 POSTGRES_PASSWORD=$pgPassword
+DB_PORT=$dbPort
 EVOLUTION_PORT=$port
 EVOLUTION_API_KEY=$apiKey
 EVOLUTION_INSTANCE=$Slug
@@ -96,7 +101,7 @@ N8N_WEBHOOK_URL=http://${N8nContainer}:5678/webhook/wa-$Slug
 [IO.File]::WriteAllText((Join-Path $ClientDir '.env'), $envContent, (New-Object Text.UTF8Encoding $false))
 
 # Nombre del negocio y modelo por defecto en la DB del cliente
-Add-Content -Encoding UTF8 -Path ([IO.Path]::Combine($ClientDir, 'db', 'init', '01-schema.sql')) -Value @"
+Add-Content -Encoding UTF8 -Path ([IO.Path]::Combine($ClientDir, 'db', 'init', '01_schema.sql')) -Value @"
 
 UPDATE bot_config SET business_name = '$($Nombre.Replace("'", "''"))', ai_model = '$OllamaModel' WHERE id = 1;
 "@
@@ -126,7 +131,7 @@ foreach ($f in 'workflow.json', 'credentials.json') {
 # --- 4. Levantar contenedores ---------------------------------------------------
 Step 'Levantando base de datos, WhatsApp y túnel'
 Push-Location $ClientDir
-try { docker compose --env-file .env up -d; if ($LASTEXITCODE -ne 0) { throw 'docker compose falló' } }
+try { docker compose up -d; if ($LASTEXITCODE -ne 0) { throw 'docker compose falló' } }
 finally { Pop-Location }
 
 $base = "http://localhost:$port"
@@ -183,23 +188,24 @@ if (-not $SinN8n) {
 
 # --- 7. Resumen -----------------------------------------------------------------
 $tunnelUrl = ''
-if ($tunnelProfile -eq 'quicktunnel') {
+if ($tunnelProfile -eq 'tunel') {
     for ($i = 0; $i -lt 15 -and -not $tunnelUrl; $i++) {
         Start-Sleep 2
-        $m = (docker logs "wa-$Slug-quicktunnel" 2>&1 | Out-String) | Select-String 'https://[a-z0-9-]+\.trycloudflare\.com'
+        $m = (docker logs "wa-$Slug-tunel" 2>&1 | Out-String) | Select-String 'https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com'
         if ($m) { $tunnelUrl = $m.Matches[0].Value }
     }
 }
 
 Write-Host "`n================ Cliente '$Nombre' listo ================" -ForegroundColor Green
 Write-Host "Carpeta:        clients\$Slug  (el .env tiene las claves)"
+Write-Host "Base de datos:  localhost:$dbPort  (DBeaver/pgAdmin, usuario y base 'chatbot', clave en .env)"
 Write-Host "Evolution API:  $base   (manager: $base/manager , API key en .env)"
 if ($tunnelUrl) { Write-Host "Túnel público:  $tunnelUrl  (cambia si se reinicia; para fija usá -TunnelToken)" }
-if ($tunnelProfile -eq 'tunnel') { Write-Host "Túnel público:  $PublicUrl" }
+if ($tunnelProfile -eq 'tunel-cf') { Write-Host "Túnel público:  $PublicUrl" }
 Write-Host ''
 Write-Host 'Pasos que faltan:' -ForegroundColor Yellow
-Write-Host "  1. En el celu del cliente: WhatsApp > Dispositivos vinculados > Vincular > escanear qr.png"
+Write-Host "  - En el celu del cliente: WhatsApp > Dispositivos vinculados > Vincular > escanear qr.png"
 Write-Host "     (si venció: .\scripts\cliente.ps1 $Slug qr)"
-if (-not $wfActive) { Write-Host "  2. En n8n: abrir 'WA $Nombre - Chatbot IA' y activarlo (Active / Publish)." }
-Write-Host "  3. Cargar la info del negocio: .\scripts\cliente.ps1 $Slug sql"
-Write-Host "  4. Ollama en Windows con el modelo: ollama pull $OllamaModel"
+if (-not $wfActive) { Write-Host "  - En n8n: abrir 'WA $Nombre - Chatbot IA' y activarlo (Active / Publish)." }
+Write-Host "  - Cargar la info del negocio: .\scripts\cliente.ps1 $Slug sql"
+Write-Host "  - Ollama en Windows con el modelo: ollama pull $OllamaModel"
