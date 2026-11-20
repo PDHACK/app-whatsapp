@@ -34,8 +34,9 @@ if (-not (Test-Path $EnvFile)) { throw "No existe el cliente '$Slug' (clients\$S
 New-Item -ItemType Directory -Force -Path $CertDir | Out-Null
 
 function Cfd {
-    # cloudflared dentro de Docker, con la carpeta de credenciales montada
-    docker run --rm -v "${CertDir}:/home/nonroot/.cloudflared" $Image @args
+    # cloudflared dentro de Docker, con la carpeta de credenciales montada.
+    # Como root (con el mismo HOME) para poder escribir en carpetas de Windows montadas desde WSL/Kiri.
+    docker run --rm -u 0 -e HOME=/home/nonroot -v "${CertDir}:/home/nonroot/.cloudflared" $Image @args
 }
 function Set-EnvValue([string]$key, [string]$value) {
     $lines = [IO.File]::ReadAllLines($EnvFile)
@@ -68,6 +69,11 @@ $dns = (Cfd tunnel --origincert $CertIn route dns $Tunnel $Hostname 2>&1 | Out-S
 Write-Host $dns.Trim()
 if ($LASTEXITCODE -ne 0 -and $dns -notmatch 'already') {
     throw "No se pudo crear el DNS de $Hostname. ¿El login fue con el dominio '$Dominio'?"
+}
+# Si la sesión (cert.pem) es de otra zona, cloudflared crea "wa-x.destru.online.<otra-zona>" sin dar error.
+if ($dns -match "$([regex]::Escape($Hostname))\.[a-z0-9]") {
+    throw ("La sesión de Cloudflare en $CertDir es de otro dominio (se creó '$($Matches[0])...'). " +
+           "Borrá ese registro DNS en Cloudflare, renombrá cert.pem y volvé a correr el script para iniciar sesión eligiendo '$Dominio'.")
 }
 
 $token = (Cfd tunnel --origincert $CertIn token $Tunnel 2>$null | Out-String).Trim()
