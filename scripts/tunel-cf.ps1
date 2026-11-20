@@ -58,8 +58,9 @@ if (-not (Test-Path (Join-Path $CertDir 'cert.pem'))) {
 # --- 2. Túnel y DNS --------------------------------------------------------------
 Write-Host "`n==> Túnel '$Tunnel' -> https://$Hostname" -ForegroundColor Cyan
 $list = (Cfd tunnel --origincert $CertIn list --name $Tunnel --output json 2>$null | Out-String)
-$exists = $false
-try { $exists = @($list | ConvertFrom-Json).Count -gt 0 } catch { }
+# Se busca el nombre en el JSON como texto: en Windows PowerShell 5.1, ConvertFrom-Json de "[]"
+# devuelve un objeto que cuenta como 1 y hacía creer que el túnel ya existía.
+$exists = $list -match ('"name"\s*:\s*"' + [regex]::Escape($Tunnel) + '"')
 if (-not $exists) {
     Cfd tunnel --origincert $CertIn create $Tunnel
     if ($LASTEXITCODE -ne 0) { throw "No se pudo crear el túnel $Tunnel." }
