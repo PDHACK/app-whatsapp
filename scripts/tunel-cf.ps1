@@ -91,7 +91,10 @@ try { docker compose up -d } finally { Pop-Location }
 
 Write-Host "`nProbando https://$Hostname (el DNS puede tardar un minuto)..."
 $ok = $false
-for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
+# Un CNAME nuevo tarda en propagarse y Windows puede tener cacheado que no existía.
+try { Clear-DnsClientCache -ErrorAction Stop } catch { ipconfig /flushdns | Out-Null }
+for ($i = 0; $i -lt 40 -and -not $ok; $i++) {
+    if ($i -gt 0 -and $i % 10 -eq 0) { try { Clear-DnsClientCache -ErrorAction Stop } catch { ipconfig /flushdns | Out-Null } }
     try { Invoke-RestMethod "https://$Hostname/" -TimeoutSec 5 | Out-Null; $ok = $true } catch { Start-Sleep 6 }
 }
 if ($ok) {
