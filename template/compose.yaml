@@ -1,28 +1,39 @@
 # =====================================================================
 # Entorno de UN cliente: base de datos + WhatsApp (Evolution API) + túnel.
-# Se copia a clients/<slug>/ con scripts/nuevo-cliente.ps1 y se levanta con:
-#   docker compose --env-file .env up -d
+# Mismo esquema que panaderia-reservas: entorno + base de datos + túnel.
+# Se copia a clients/<slug>/ con scripts/nuevo-cliente.ps1. Dentro de esa carpeta:
+#   Levantar:   docker compose up -d          (lee .env solo)
+#   Logs:       docker compose logs -f evolution
+#   Bajar:      docker compose down            (los datos quedan en los volúmenes)
+#   Túnel temporal (sin cuenta):   COMPOSE_PROFILES=tunel     en .env
+#   Túnel con subdominio fijo:     COMPOSE_PROFILES=tunel-cf  + CLOUDFLARE_TUNNEL_TOKEN
 # n8n NO está acá: es tu contenedor existente, conectado a la red "wa-net".
 # =====================================================================
 name: wa-${CLIENT_SLUG}
 
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     container_name: wa-${CLIENT_SLUG}-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en .env}
+      TZ: America/Argentina/Buenos_Aires
+      PGTZ: America/Argentina/Buenos_Aires
     volumes:
       - db_data:/var/lib/postgresql/data
+      # Se ejecutan solo la primera vez (volumen vacío), en orden alfabético
       - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Para DBeaver/pgAdmin (cada cliente usa un puerto distinto: 5440, 5441, ...)
+      - "127.0.0.1:${DB_PORT}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     networks:
       default:
       wa-net:
@@ -47,6 +58,7 @@ services:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
       AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
       LANGUAGE: es
+      TZ: America/Argentina/Buenos_Aires
       DEL_INSTANCE: "false"
       CONFIG_SESSION_PHONE_CLIENT: ${EVOLUTION_DEVICE_NAME}
       CONFIG_SESSION_PHONE_NAME: Chrome
@@ -83,31 +95,31 @@ services:
         aliases:
           - wa-${CLIENT_SLUG}-evolution
 
-  # Túnel con dominio propio (gratis en Cloudflare): requiere TUNNEL_TOKEN.
-  # Se activa con COMPOSE_PROFILES=tunnel en .env
-  tunnel:
-    image: cloudflare/cloudflared:2026.10.7
-    container_name: wa-${CLIENT_SLUG}-tunnel
-    restart: unless-stopped
-    profiles:
-      - tunnel
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+  # Túnel público temporal (Cloudflare, sin cuenta): URL *.trycloudflare.com
+  # que cambia en cada arranque. Se activa con COMPOSE_PROFILES=tunel en .env
+  tunel:
+    image: cloudflare/cloudflared:2026.11.1
+    container_name: wa-${CLIENT_SLUG}-tunel
+    profiles: ["tunel"]
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 --url http://evolution:8080
     depends_on:
       - evolution
+    restart: unless-stopped
 
-  # Túnel rápido sin cuenta ni dominio (URL *.trycloudflare.com que cambia
-  # en cada reinicio). Se activa con COMPOSE_PROFILES=quicktunnel en .env
-  quicktunnel:
-    image: cloudflare/cloudflared:2026.10.7
-    container_name: wa-${CLIENT_SLUG}-quicktunnel
-    restart: unless-stopped
-    profiles:
-      - quicktunnel
-    command: tunnel --no-autoupdate --url http://evolution:8080
+  # Túnel con nombre de TU cuenta de Cloudflare: subdominio fijo
+  # (ej. https://wa-cliente.tudominio.com). Token en .env como CLOUDFLARE_TUNNEL_TOKEN;
+  # el subdominio y el destino (http://evolution:8080) se configuran en
+  # Cloudflare Zero Trust > Networks > Tunnels. Se activa con COMPOSE_PROFILES=tunel-cf
+  tunel-cf:
+    image: cloudflare/cloudflared:2026.11.1
+    container_name: wa-${CLIENT_SLUG}-tunel-cf
+    profiles: ["tunel-cf"]
+    command: tunnel --no-autoupdate --url http://evolution:8080 run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       - evolution
+    restart: unless-stopped
 
 volumes:
   db_data:

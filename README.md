@@ -30,12 +30,14 @@ Todo se comunica por una red Docker compartida, `wa-net`, a la que se conecta tu
 
 | Ruta | Para qué |
 |---|---|
-| `template/docker-compose.yml` | Entorno de un cliente: `db` (Postgres 16), `evolution` (Evolution API v2.3.7, Baileys), `tunnel` o `quicktunnel` (cloudflared) |
-| `template/db/init/01-schema.sql` | Tablas del bot (`bot_config`, `knowledge`, `contacts`, `messages`) y la lógica en funciones SQL |
+| `template/compose.yaml` | Entorno de un cliente, con el mismo esquema que panaderia-reservas: `db` (Postgres 17), `evolution` (Evolution API v2.3.7, Baileys) y túnel `tunel` (temporal) o `tunel-cf` (subdominio fijo) |
+| `template/db/init/01_schema.sql` | Tablas del bot (`bot_config`, `knowledge`, `contacts`, `messages`) y la lógica en funciones SQL |
 | `template/db/ejemplo-negocio.sql` | Ejemplo para cargar horarios, precios, etc. de un negocio |
 | `template/n8n/workflow.json` | Workflow del chatbot (plantilla, se genera uno por cliente) |
 | `template/n8n/credentials.json` | Credenciales de n8n del cliente (plantilla) |
 | `scripts/nuevo-cliente.ps1` | Crea un cliente de punta a punta |
+| `scripts/tunel-cf.ps1` | Pasa un cliente a túnel fijo con subdominio propio (ej. `wa-prueba.destru.online`) |
+| `compartido/compose.yaml` | Servicios compartidos: `ollama-puente` (para Docker sobre WSL, como Kiri) |
 | `scripts/cliente.ps1` | Maneja un cliente: `up`, `down`, `estado`, `qr`, `sql`, `backup`, `logs`, `url`, `lista` |
 | `clients/<slug>/` | Lo genera el script. **No se sube a git** (tiene claves) |
 
@@ -45,6 +47,7 @@ Todo se comunica por una red Docker compartida, `wa-net`, a la que se conecta tu
 - Tu contenedor de n8n corriendo. Por defecto se busca uno llamado `n8n`; si se llama distinto, pasá `-N8nContainer <nombre>` (lo ves con `docker ps`).
 - [Ollama](https://ollama.com) en Windows, con un modelo descargado: `ollama pull llama3.2:3b`.
   Para que n8n (dentro de Docker) lo alcance, Ollama tiene que escuchar en todas las interfaces: variable de entorno de Windows `OLLAMA_HOST=0.0.0.0` y reiniciar Ollama.
+  En **Kiri** (Docker sobre WSL), `host.docker.internal` apunta a la máquina virtual de WSL y no a Windows. El script lo detecta y levanta `ollama-puente` (en `compartido/compose.yaml`), que averigua la IP de Windows en cada arranque. Así n8n usa `http://host.docker.internal:11435` y no se rompe al reiniciar la PC.
 - Opcional: cuenta gratis de Cloudflare con un dominio, si querés una URL fija por cliente.
 
 ## Crear un cliente
@@ -54,10 +57,12 @@ cd app-whatsapp
 .\scripts\nuevo-cliente.ps1 -Slug panaderia -Nombre "Panadería San José"
 ```
 
+Si Windows bloquea el script: `powershell -ExecutionPolicy Bypass -File scripts\nuevo-cliente.ps1 -Slug panaderia -Nombre "Panadería San José"`.
+
 El script:
 
 1. Crea la red `wa-net` (si no existe) y le conecta tu contenedor de n8n.
-2. Copia la plantilla a `clients\panaderia\` y genera un `.env` con contraseñas aleatorias y un puerto libre (8081, 8082, ...).
+2. Copia la plantilla a `clients\panaderia\` y genera un `.env` con contraseñas aleatorias y puertos libres (Evolution 8081, 8082, ...; base 5440, 5441, ... para DBeaver/pgAdmin).
 3. Levanta `db` + `evolution` + túnel con `docker compose`.
 4. Crea la instancia de WhatsApp y abre `qr.png`.
 5. Importa en n8n las credenciales y el workflow **"WA Panadería San José - Chatbot IA"** y lo activa.
@@ -72,12 +77,17 @@ Opciones útiles: `-OllamaModel qwen2.5:3b`, `-OllamaUrl http://otra-pc:11434`, 
 
 ## Túneles de Cloudflare
 
-- **Sin nada configurado** se usa un *quick tunnel*: gratis y sin cuenta, pero la URL `*.trycloudflare.com` cambia en cada reinicio. Verla: `.\scripts\cliente.ps1 panaderia url`.
-- **URL fija (recomendado en producción)**: en Cloudflare Zero Trust > Networks > Tunnels creá un túnel por cliente, con un *public hostname* (ej. `wa-panaderia.tudominio.com`) apuntando a `http://evolution:8080`. Copiá el token y:
+- **Sin nada configurado** se usa el perfil `tunel` (igual que en panaderia-reservas): gratis y sin cuenta, pero la URL `*.trycloudflare.com` cambia en cada reinicio. Verla: `.\scripts\cliente.ps1 panaderia url`.
+- **URL fija con tu dominio (recomendado)**: un comando y listo, sin instalar cloudflared ni copiar tokens a mano:
+  ```powershell
+  .\scripts\tunel-cf.ps1 -Slug panaderia -Dominio destru.online        # -> https://wa-panaderia.destru.online
+  ```
+  La primera vez aparece un link para iniciar sesión en Cloudflare y elegir el dominio; la sesión queda en `%USERPROFILE%\.cloudflared`. El script crea el túnel `wa-<slug>`, el DNS del subdominio, guarda el token en el `.env` del cliente y cambia al perfil `tunel-cf`. También se puede al crear el cliente: `nuevo-cliente.ps1 ... -Dominio destru.online`.
+- **URL fija a mano**: en Cloudflare Zero Trust > Networks > Tunnels creá un túnel por cliente, con un *public hostname* (ej. `wa-panaderia.tudominio.com`) apuntando a `http://evolution:8080`. Copiá el token y:
   ```powershell
   .\scripts\nuevo-cliente.ps1 -Slug panaderia -Nombre "Panadería San José" -TunnelToken "eyJh..." -PublicUrl "https://wa-panaderia.tudominio.com"
   ```
-  En un cliente ya creado: poné `COMPOSE_PROFILES=tunnel`, `TUNNEL_TOKEN=...` y `EVOLUTION_PUBLIC_URL=...` en su `.env` y corré `.\scripts\cliente.ps1 panaderia up`.
+  En un cliente ya creado: poné `COMPOSE_PROFILES=tunel-cf`, `CLOUDFLARE_TUNNEL_TOKEN=...` y `EVOLUTION_PUBLIC_URL=...` en su `.env` y corré `.\scripts\cliente.ps1 panaderia up`.
 
 El túnel expone el panel de Evolution (`/manager`, protegido con la API key del `.env`) para vincular o revisar el WhatsApp a distancia. La comunicación Evolution ↔ n8n va por la red interna y no necesita túnel.
 

@@ -33,7 +33,7 @@ if ($Accion -eq 'lista') {
         $envs = @{}; Get-Content (Join-Path $_.FullName '.env') | Where-Object { $_ -match '^\w+=' } |
             ForEach-Object { $k, $v = $_ -split '=', 2; $envs[$k] = $v }
         $running = (docker ps --filter "name=^wa-$($_.Name)-" --format '{{.Names}}' | Measure-Object).Count
-        [pscustomobject]@{ Cliente = $_.Name; Nombre = $envs.CLIENT_NAME; Puerto = $envs.EVOLUTION_PORT; Tunel = $envs.COMPOSE_PROFILES; Contenedores = $running }
+        [pscustomobject]@{ Cliente = $_.Name; Nombre = $envs.CLIENT_NAME; Puerto = $envs.EVOLUTION_PORT; DB = $envs.DB_PORT; Tunel = $envs.COMPOSE_PROFILES; Contenedores = $running }
     } | Format-Table -AutoSize
     return
 }
@@ -48,12 +48,12 @@ $headers = @{ apikey = $cfg.EVOLUTION_API_KEY }
 Push-Location $ClientDir
 try {
     switch ($Accion) {
-        'up'      { docker compose --env-file .env up -d }
-        'down'    { docker compose --env-file .env down }
-        'restart' { docker compose --env-file .env restart }
-        'logs'    { docker compose --env-file .env logs -f --tail 100 }
+        'up'      { docker compose up -d }
+        'down'    { docker compose down }
+        'restart' { docker compose restart }
+        'logs'    { docker compose logs -f --tail 100 }
         'estado'  {
-            docker compose --env-file .env ps
+            docker compose ps
             try {
                 $st = Invoke-RestMethod "$base/instance/connectionState/$($cfg.EVOLUTION_INSTANCE)" -Headers $headers -ErrorAction Stop
                 Write-Host "`nWhatsApp: $($st.instance.state)  (open = conectado)" -ForegroundColor Green
@@ -71,7 +71,7 @@ try {
             } else { Write-Warning "Sin QR todavía (respuesta: $($r | ConvertTo-Json -Compress)). Probá de nuevo en unos segundos." }
         }
         'url' {
-            $m = (docker logs "wa-$Slug-quicktunnel" 2>&1 | Out-String) | Select-String 'https://[a-z0-9-]+\.trycloudflare\.com' -AllMatches
+            $m = (docker logs "wa-$Slug-tunel" 2>&1 | Out-String) | Select-String 'https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com' -AllMatches
             if ($m) { $m.Matches[-1].Value } else { "Sin túnel rápido. URL configurada: $($cfg.EVOLUTION_PUBLIC_URL)" }
         }
         'sql'    { docker exec -it "wa-$Slug-db" psql -U $cfg.POSTGRES_USER -d $cfg.POSTGRES_DB }

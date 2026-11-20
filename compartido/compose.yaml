@@ -1,0 +1,25 @@
+# =====================================================================
+# Servicios compartidos por todos los clientes (se levantan una sola vez).
+#   docker compose -f compartido/compose.yaml up -d
+#
+# ollama-puente: en Docker sobre WSL (como Kiri), "host.docker.internal"
+# apunta a la máquina virtual de WSL y no a Windows, y la IP de Windows
+# vista desde WSL cambia al reiniciar. Este puente corre en la red de la
+# VM, averigua esa IP en cada arranque (la puerta de enlace por defecto)
+# y reenvía el puerto 11435 de la VM al Ollama de Windows (11434).
+# n8n lo usa como http://host.docker.internal:11435
+# =====================================================================
+name: wa-compartido
+
+services:
+  ollama-puente:
+    image: alpine/socat:1.8.0.3
+    container_name: wa-ollama-puente
+    network_mode: host
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        GW=$$(ip route | awk '/^default/ {print $$3; exit}')
+        echo "Reenviando :11435 -> $$GW:11434 (Ollama en Windows)"
+        exec socat TCP-LISTEN:11435,fork,reuseaddr TCP:$$GW:11434
